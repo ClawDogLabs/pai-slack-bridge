@@ -115,6 +115,23 @@ export function updateSessionActivity(channelId: string, threadTs: string): void
 }
 
 /**
+ * Update the sessionId for an existing thread (used when Claude returns its real session ID)
+ */
+export function updateSessionId(channelId: string, threadTs: string, newSessionId: string): void {
+  const store = loadSessions();
+  const key = sessionKey(channelId, threadTs);
+
+  if (store.sessions[key]) {
+    store.sessions[key].sessionId = newSessionId;
+    store.sessions[key].lastActivity = new Date().toISOString();
+    saveSessions(store);
+    console.log(`[Session] Updated session ID for ${key}: ${newSessionId}`);
+  } else {
+    console.warn(`[Session] Cannot update sessionId: no session found for ${key}`);
+  }
+}
+
+/**
  * Look up a session by its sessionId (for bridge API)
  */
 export function getSessionBySessionId(sessionId: string): SessionMapping | null {

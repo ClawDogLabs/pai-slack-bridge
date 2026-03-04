@@ -1,5 +1,5 @@
 // Handle incoming Slack messages
-import { getOrCreateSession } from '../services/session';
+import { getOrCreateSession, updateSessionId } from '../services/session';
 import { executeClaudeStreaming, extractText, type StreamEvent, type ContentBlock } from '../services/claude';
 import { postMessage, addReaction, removeReaction, getToolEmoji, MessageUpdater, updateMessage } from '../services/slack';
 import { splitForSlack, markdownToSlack, stripSystemReminders } from '../lib/markdown-to-slack';
@@ -178,6 +178,7 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
     let lastEventWasTool = false;
     let currentMsgTs = initialMessage.ts; // Track which message we're updating
     let askedQuestions = false; // Track if AskUserQuestion was posted (dedup across events)
+    let claudeSessionIdCaptured = false; // Track if we've already updated the session ID
 
     // Execute Claude and stream responses
     for await (const event of executeClaudeStreaming(messageToSend, {
@@ -186,6 +187,12 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
       desk: primaryDesk || undefined,
     })) {
       await processStreamEvent(event, updater, initialMessage, channel, toolsUsed);
+
+      // Capture the real Claude session ID and update our session mapping (only once)
+      if (!claudeSessionIdCaptured && event.session_id && isNew) {
+        updateSessionId(channel, threadTs, event.session_id);
+        claudeSessionIdCaptured = true;
+      }
 
       // Post tool activity as separate messages in the thread
       if (event.type === 'assistant' && event.message?.content) {
