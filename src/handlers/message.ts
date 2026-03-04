@@ -17,6 +17,9 @@ import type { SlackFile } from '../types/slack';
 
 const MAX_SLACK_MESSAGE_LENGTH = 3500;
 
+// Track sessions that are currently processing a message
+const activeSessions = new Set<string>();
+
 interface SlackMessage {
   type: string;
   subtype?: string;
@@ -115,6 +118,13 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
   // Get or create session for this thread
   const { session, isNew } = getOrCreateSession(channel, threadTs, user);
   console.log(`[Handler] Session: ${session.sessionId} (${isNew ? 'new' : 'existing'})`);
+
+  // Reject concurrent messages to the same session — Claude can't resume a running session
+  if (activeSessions.has(session.sessionId)) {
+    await postMessage(channel, ':hourglass: Still working on your previous message — please wait until it finishes.', threadTs);
+    return;
+  }
+  activeSessions.add(session.sessionId);
 
   // Download any attached files
   if (message.files && message.files.length > 0) {
@@ -435,6 +445,7 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
     await addReaction(channel, ts, 'x').catch(() => {});
 
   } finally {
+    activeSessions.delete(session.sessionId);
     updater.cleanup();
     // Always clear file watcher session
     if (isTeamMode && channelConfig.autoUploadAssets) {

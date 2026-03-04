@@ -130,6 +130,10 @@ When you create a file the user needs, use the send-file endpoint to deliver it 
 Replace SESSION_ID_HERE with the actual session ID from the current context.
 
 INBOUND FILES: When a user attaches files (images, PDFs, text), their local paths are prepended to the message as [Attached: /path/to/file]. Use the Read tool to view them — it natively supports images (PNG, JPG, GIF, WebP) and PDFs.
+
+--- WORKING DIRECTORY ---
+Your working directory is ${paiDir} (for skills and memory access).
+When creating project folders or files for the user, create them under ${process.env.USERPROFILE || process.env.HOME}\\Documents\\ unless they specify otherwise.
 --- END BRIDGE API ---
 ${deskContext}`;
 
