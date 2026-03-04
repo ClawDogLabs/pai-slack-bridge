@@ -136,8 +136,8 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
     threadTs
   );
 
-  // Add thinking reaction to user's message
-  await addReaction(channel, ts, 'hourglass_flowing_sand');
+  // Add thinking reaction to user's message (best-effort — requires reactions:write scope)
+  await addReaction(channel, ts, 'hourglass_flowing_sand').catch(() => {});
 
   // Create message updater for streaming
   let updater = new MessageUpdater(channel, initialMessage.ts);
@@ -340,8 +340,8 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
       // Waiting for user to answer questions — don't finalize
       const duration = ((Date.now() - startTime) / 1000).toFixed(1);
       await updateMessage(channel, initialMessage.ts, `:hourglass: Waiting for your answers... (${duration}s)`, true);
-      await removeReaction(channel, ts, 'hourglass_flowing_sand');
-      await addReaction(channel, ts, 'question');
+      await removeReaction(channel, ts, 'hourglass_flowing_sand').catch(() => {});
+      await addReaction(channel, ts, 'question').catch(() => {});
       console.log(`[Handler] Finalize skipped — waiting for question answers`);
     } else {
       // Normal completion
@@ -368,8 +368,8 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
       }
 
       // Remove thinking reaction, add checkmark
-      await removeReaction(channel, ts, 'hourglass_flowing_sand');
-      await addReaction(channel, ts, 'white_check_mark');
+      await removeReaction(channel, ts, 'hourglass_flowing_sand').catch(() => {});
+      await addReaction(channel, ts, 'white_check_mark').catch(() => {});
     }
 
     // Upload any files generated during execution
@@ -431,8 +431,8 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
     await updater.flush();
 
     // Remove thinking reaction, add error reaction
-    await removeReaction(channel, ts, 'hourglass_flowing_sand');
-    await addReaction(channel, ts, 'x');
+    await removeReaction(channel, ts, 'hourglass_flowing_sand').catch(() => {});
+    await addReaction(channel, ts, 'x').catch(() => {});
 
   } finally {
     updater.cleanup();
@@ -465,7 +465,7 @@ async function processStreamEvent(
       if (event.tool && !toolsUsed.has(event.tool)) {
         toolsUsed.add(event.tool);
         const emoji = getToolEmoji(event.tool);
-        await addReaction(channel, responseMessage.ts, emoji);
+        await addReaction(channel, responseMessage.ts, emoji).catch(() => {});
         console.log(`[Handler] Tool: ${event.tool}`);
       }
       break;

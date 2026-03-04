@@ -150,19 +150,19 @@ ${deskContext}`;
     args.push('--session-id', options.sessionId);
   }
 
-  // Add the message
-  args.push(message);
-
-  console.log(`[Claude] Spawning: claude ${args.join(' ')}`);
+  // Pass message via stdin to avoid Windows argument-parsing issues with multiline system prompts
+  console.log(`[Claude] Spawning: claude ${args.join(' ')} <stdin:message>`);
   console.log(`[Claude] CWD: ${cwd}`);
   console.log(`[Claude] PAI_DIR: ${paiDir}`);
 
   const proc = spawn(['claude', ...args], {
     cwd,
-    env: {
-      ...process.env,
-      PAI_DIR: paiDir,  // Ensure PAI_DIR is set for hooks
-    },
+    env: (() => {
+      const env = { ...process.env, PAI_DIR: paiDir };
+      delete (env as any).CLAUDECODE;  // Prevent "nested session" error when bridge runs inside Claude Code
+      return env;
+    })(),
+    stdin: new TextEncoder().encode(message),
     stdout: 'pipe',
     stderr: 'pipe',
   });

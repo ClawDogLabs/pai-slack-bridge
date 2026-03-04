@@ -40,6 +40,23 @@ PAI Slack Bridge connects Slack to Claude Code, allowing you to interact with Cl
 4. Response streams back to Slack in real-time
 5. Thread replies resume the same Claude session via `--resume`
 
+## Session Lifecycle
+
+Each Slack thread maps 1:1 to a Claude Code session:
+
+- **New thread** → starts a fresh Claude Code session with a unique session ID
+- **Thread reply** → resumes the same session via `--resume`, preserving full conversation context
+- **DM with no thread** → each top-level DM message anchors its own session
+
+Sessions are ended in two ways:
+
+1. **24-hour auto-cleanup** — the bridge checks every hour and removes sessions older than 24 hours from `sessions.json`. The next message in that thread will start a new session.
+2. **Bridge restart** — restarting the bridge process clears all in-memory state. Any in-progress Claude execution is terminated.
+
+There is currently no `/exit` or cancel command — sessions expire naturally via the cleanup job.
+
+---
+
 ## Features
 
 - **Streaming responses** - See Claude's response as it's generated
