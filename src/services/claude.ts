@@ -138,7 +138,7 @@ ${deskContext}`;
     '--output-format', 'stream-json',
     '--verbose',
     '--model', options.model || 'sonnet',
-    '--permission-mode', options.permissionMode || 'acceptEdits',
+    '--permission-mode', options.permissionMode || 'bypassPermissions',
     '--settings', settingsPath,
     '--append-system-prompt', slackSystemPrompt,
   ];
@@ -155,7 +155,13 @@ ${deskContext}`;
   console.log(`[Claude] CWD: ${cwd}`);
   console.log(`[Claude] PAI_DIR: ${paiDir}`);
 
-  const proc = spawn(['claude', ...args], {
+  // On Windows, claude is a .cmd file which requires cmd.exe to execute
+  const isWindows = process.platform === 'win32';
+  const claudeCmd = isWindows
+    ? ['cmd', '/c', 'claude', ...args]
+    : ['claude', ...args];
+
+  const proc = spawn(claudeCmd, {
     cwd,
     env: (() => {
       const env = { ...process.env, PAI_DIR: paiDir };
