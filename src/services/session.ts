@@ -1,6 +1,7 @@
 // Session manager: maps Slack threads to Claude Code sessions
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { dirname } from 'path';
+import { dirname, join } from 'path';
+import { homedir } from 'os';
 import { randomUUID } from 'crypto';
 
 export interface SessionMapping {
@@ -18,8 +19,8 @@ interface SessionStore {
 }
 
 // Use BRIDGE_DATA_DIR or default to ./data relative to project
-const DATA_DIR = process.env.BRIDGE_DATA_DIR || `${dirname(dirname(Bun.main))}/data`;
-const SESSIONS_PATH = `${DATA_DIR}/sessions.json`;
+const DATA_DIR = process.env.BRIDGE_DATA_DIR || join(dirname(dirname(Bun.main)), 'data');
+const SESSIONS_PATH = join(DATA_DIR, 'sessions.json');
 
 // Ensure data directory exists
 if (!existsSync(DATA_DIR)) {
@@ -203,4 +204,21 @@ export function cleanupOldSessions(maxAgeHours = 24): number {
   }
 
   return removed;
+}
+
+/**
+ * Get a per-thread CWD for Windows session isolation.
+ * On Windows, --resume doesn't work (Claude CLI bug #27463), so we use
+ * --continue which resumes the most recent session in the CWD. Each thread
+ * gets its own CWD to prevent cross-talk between concurrent threads.
+ * Returns empty string on non-Windows (use default CWD).
+ */
+export function getThreadCwd(channelId: string, threadTs: string): string {
+  if (process.platform !== 'win32') return '';
+  const baseCwd = process.env.BRIDGE_DEFAULT_CWD || join(homedir(), '.claude');
+  const threadDir = join(baseCwd, '.bridge-threads', `${channelId}-${threadTs}`);
+  if (!existsSync(threadDir)) {
+    mkdirSync(threadDir, { recursive: true });
+  }
+  return threadDir;
 }
