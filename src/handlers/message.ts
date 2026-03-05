@@ -1,5 +1,5 @@
 // Handle incoming Slack messages
-import { getOrCreateSession, updateSessionId } from '../services/session';
+import { getOrCreateSession, getSession, setSessionVerbose, updateSessionId } from '../services/session';
 import { executeClaudeStreaming, extractText, type StreamEvent, type ContentBlock } from '../services/claude';
 import { postMessage, addReaction, removeReaction, getToolEmoji, MessageUpdater, updateMessage } from '../services/slack';
 import { splitForSlack, markdownToSlack, stripSystemReminders } from '../lib/markdown-to-slack';
@@ -44,6 +44,22 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
 
   // Use thread_ts if in a thread, otherwise use the message ts (starts new thread)
   const threadTs = thread_ts || ts;
+
+  // Intercept 🤫 in message text to toggle verbose off for this thread
+  if (text.includes('\u{1F92B}') || text.includes(':shushing_face:')) {
+    const session = getSession(channel, threadTs);
+    if (session) {
+      const isCurrentlyVerbose = session.verbose !== false;
+      const newVerbose = !isCurrentlyVerbose;
+      setSessionVerbose(channel, threadTs, newVerbose);
+      const status = newVerbose ? 'on' : 'off';
+      await addReaction(channel, ts, newVerbose ? 'loud_sound' : 'mute');
+      console.log(`[Handler] Verbose ${status} for session ${session.sessionId} (message emoji)`);
+      // If the message is ONLY the emoji, don't forward to Claude
+      const stripped = text.replace(/\u{1F92B}|:shushing_face:/gu, '').trim();
+      if (!stripped) return;
+    }
+  }
 
   console.log(`[Handler] Message from ${user} in ${channel}: ${text.slice(0, 50)}...`);
   if (message.files?.length) {
@@ -119,6 +135,12 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
   const { session, isNew } = getOrCreateSession(channel, threadTs, user);
   console.log(`[Handler] Session: ${session.sessionId} (${isNew ? 'new' : 'existing'})`);
 
+  // Resolve verbosity: session override > channel config > default (true)
+  const verbose = session.verbose ?? channelConfig.verbose ?? true;
+  if (!verbose) {
+    console.log(`[Handler] Verbose disabled for this session`);
+  }
+
   // Reject concurrent messages to the same session — Claude can't resume a running session
   if (activeSessions.has(session.sessionId)) {
     await postMessage(channel, ':hourglass: Still working on your previous message — please wait until it finishes.', threadTs);
@@ -178,21 +200,27 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
     let lastEventWasTool = false;
     let currentMsgTs = initialMessage.ts; // Track which message we're updating
     let askedQuestions = false; // Track if AskUserQuestion was posted (dedup across events)
-    let claudeSessionIdCaptured = false; // Track if we've already updated the session ID
 
     // Execute Claude and stream responses
+    let claudeSessionId: string | undefined;
     for await (const event of executeClaudeStreaming(messageToSend, {
       resumeId: isNew ? undefined : session.sessionId,
       sessionId: isNew ? session.sessionId : undefined,
       desk: primaryDesk || undefined,
+      verbose,
     })) {
-      await processStreamEvent(event, updater, initialMessage, channel, toolsUsed);
-
-      // Capture the real Claude session ID and update our session mapping (only once)
-      if (!claudeSessionIdCaptured && event.session_id && isNew) {
-        updateSessionId(channel, threadTs, event.session_id);
-        claudeSessionIdCaptured = true;
+      // Capture Claude Code's actual session ID from init event
+      if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
+        claudeSessionId = event.session_id;
+        // Reconcile: update stored session if Claude Code assigned a different ID
+        if (event.session_id !== session.sessionId) {
+          console.warn(`[Handler] Session ID mismatch! Bridge: ${session.sessionId}, Claude: ${event.session_id}`);
+          updateSessionId(channel, threadTs, event.session_id);
+          session.sessionId = event.session_id; // Update local ref too
+        }
       }
+
+      await processStreamEvent(event, updater, initialMessage, channel, toolsUsed);
 
       // Post tool activity as separate messages in the thread
       if (event.type === 'assistant' && event.message?.content) {

@@ -10,6 +10,7 @@ export interface ClaudeOptions {
   model?: string;
   permissionMode?: string;
   desk?: DeskDefinition; // Desk context for routing
+  verbose?: boolean;     // Pass --verbose to Claude CLI (default: true)
 }
 
 export interface StreamEvent {
@@ -137,10 +138,12 @@ When creating project folders or files for the user, create them under ${process
 --- END BRIDGE API ---
 ${deskContext}`;
 
+  const useVerbose = options.verbose !== false;
+
   const args = [
     '-p',
     '--output-format', 'stream-json',
-    '--verbose',
+    ...(useVerbose ? ['--verbose'] : []),
     '--model', options.model || 'sonnet',
     '--permission-mode', options.permissionMode || 'bypassPermissions',
     '--settings', settingsPath,
@@ -165,13 +168,10 @@ ${deskContext}`;
     ? ['cmd', '/c', 'claude', ...args]
     : ['claude', ...args];
 
+  const { CLAUDECODE, ...cleanEnv } = process.env;
   const proc = spawn(claudeCmd, {
     cwd,
-    env: (() => {
-      const env = { ...process.env, PAI_DIR: paiDir };
-      delete (env as any).CLAUDECODE;  // Prevent "nested session" error when bridge runs inside Claude Code
-      return env;
-    })(),
+    env: { ...cleanEnv, PAI_DIR: paiDir },
     stdin: new TextEncoder().encode(message),
     stdout: 'pipe',
     stderr: 'pipe',
