@@ -1,7 +1,7 @@
 // Handle incoming Slack messages
-import { getOrCreateSession, getSession, setSessionVerbose } from '../services/session';
+import { getOrCreateSession, getSession, setSessionVerbose, updateSessionId } from '../services/session';
 import { executeClaudeStreaming, extractText, type StreamEvent, type ContentBlock } from '../services/claude';
-import { postMessage, addReaction, removeReaction, getToolEmoji, MessageUpdater, updateMessage, getThreadHistory, type ThreadMessage } from '../services/slack';
+import { postMessage, addReaction, removeReaction, getToolEmoji, MessageUpdater, updateMessage } from '../services/slack';
 import { splitForSlack, markdownToSlack, stripSystemReminders } from '../lib/markdown-to-slack';
 import { getChannelConfig, isChannelEnabled } from '../services/channel-config';
 import { checkRateLimits, recordUsage } from '../services/usage-tracker';
@@ -30,17 +30,6 @@ interface SlackMessage {
   thread_ts?: string;
   bot_id?: string;
   files?: SlackFile[];
-}
-
-/**
- * Format prior thread messages as a conversation history prefix for Claude
- */
-function buildThreadContextPrefix(history: ThreadMessage[]): string {
-  if (history.length === 0) return '';
-  const lines = history.map(m =>
-    `[${m.role === 'bot' ? 'Assistant' : 'User'}]: ${m.text}`
-  );
-  return `=== CONVERSATION HISTORY ===\n${lines.join('\n')}\n=== END HISTORY ===\n\n`;
 }
 
 /**
@@ -159,15 +148,6 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
   }
   activeSessions.add(session.sessionId);
 
-  // Inject thread history as context for all follow-up messages in a thread
-  if (!isNew) {
-    const history = await getThreadHistory(channel, threadTs, ts);
-    if (history.length > 0) {
-      console.log(`[Handler] Injecting ${history.length} prior messages as context`);
-      messageToSend = buildThreadContextPrefix(history) + messageToSend;
-    }
-  }
-
   // Download any attached files
   if (message.files && message.files.length > 0) {
     const botToken = process.env.SLACK_BOT_TOKEN;
@@ -222,10 +202,24 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
     let askedQuestions = false; // Track if AskUserQuestion was posted (dedup across events)
 
     // Execute Claude and stream responses
+    let claudeSessionId: string | undefined;
     for await (const event of executeClaudeStreaming(messageToSend, {
+      resumeId: isNew ? undefined : session.sessionId,
+      sessionId: isNew ? session.sessionId : undefined,
       desk: primaryDesk || undefined,
       verbose,
     })) {
+      // Capture Claude Code's actual session ID from init event
+      if (event.type === 'system' && event.subtype === 'init' && event.session_id) {
+        claudeSessionId = event.session_id;
+        // Reconcile: update stored session if Claude Code assigned a different ID
+        if (event.session_id !== session.sessionId) {
+          console.warn(`[Handler] Session ID mismatch! Bridge: ${session.sessionId}, Claude: ${event.session_id}`);
+          updateSessionId(channel, threadTs, event.session_id);
+          session.sessionId = event.session_id; // Update local ref too
+        }
+      }
+
       await processStreamEvent(event, updater, initialMessage, channel, toolsUsed);
 
       // Post tool activity as separate messages in the thread

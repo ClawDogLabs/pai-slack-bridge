@@ -135,40 +135,6 @@ export async function removeReaction(
 }
 
 /**
- * Fetch all messages in a thread, excluding the current message being processed
- */
-export interface ThreadMessage {
-  role: 'user' | 'bot';
-  text: string;
-}
-
-export async function getThreadHistory(
-  channel: string,
-  threadTs: string,
-  currentTs: string
-): Promise<ThreadMessage[]> {
-  const client = getSlackClient();
-  try {
-    const result = await client.conversations.replies({
-      channel,
-      ts: threadTs,
-      limit: 50,
-    });
-
-    return (result.messages || [])
-      .filter(msg => msg.ts !== currentTs && !!msg.text)
-      .map(msg => ({
-        role: (msg.bot_id ? 'bot' : 'user') as 'user' | 'bot',
-        text: (msg.text || '').replace(/<@[A-Z0-9]+>/g, '').trim(),
-      }))
-      .filter(msg => msg.text.length > 0);
-  } catch (error) {
-    console.error('[Slack] Failed to fetch thread history:', error);
-    return [];
-  }
-}
-
-/**
  * Tool name to emoji mapping
  */
 const TOOL_EMOJIS: Record<string, string> = {
