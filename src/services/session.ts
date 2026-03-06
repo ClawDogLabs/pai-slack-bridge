@@ -250,13 +250,14 @@ export function ensureSessionsIndex(cwd: string): void {
 
     const indexPath = join(projectDir, 'sessions-index.json');
 
-    // Read existing index or start fresh
-    let indexData: { entries: Record<string, unknown>[] } = { entries: [] };
+    // Read existing index or start fresh — must include "version": 1 to match Claude's format
+    let indexData: { version: number; entries: Record<string, unknown>[] } = { version: 1, entries: [] };
     if (existsSync(indexPath)) {
       try {
-        indexData = JSON.parse(readFileSync(indexPath, 'utf-8'));
+        const parsed = JSON.parse(readFileSync(indexPath, 'utf-8'));
+        indexData = { version: 1, entries: parsed.entries || [] };
       } catch {
-        indexData = { entries: [] };
+        indexData = { version: 1, entries: [] };
       }
     }
 
@@ -278,6 +279,7 @@ export function ensureSessionsIndex(cwd: string): void {
       let firstPrompt = 'No prompt';
       let created: string | null = null;
       let modified: string | null = null;
+      let messageCount = 0;
       try {
         const lines = readFileSync(filePath, 'utf-8').split('\n').filter(Boolean);
         for (const line of lines) {
@@ -285,6 +287,7 @@ export function ensureSessionsIndex(cwd: string): void {
             const data = JSON.parse(line);
             if (!created && data.timestamp) created = data.timestamp;
             if (data.timestamp) modified = data.timestamp;
+            if (['user', 'assistant', 'tool_use', 'tool_result'].includes(data.type)) messageCount++;
             if (data.type === 'user' && firstPrompt === 'No prompt') {
               const content = data.message?.content;
               if (typeof content === 'string' && content.trim()) {
@@ -303,11 +306,11 @@ export function ensureSessionsIndex(cwd: string): void {
         firstPrompt,
         customTitle: null,
         summary: firstPrompt,
-        messageCount: 0,
+        messageCount,
         created: created || new Date(stat.ctimeMs).toISOString(),
         modified: modified || now,
-        gitBranch: 'main',
-        projectPath: join(paiDir, 'projects'),
+        gitBranch: '',
+        projectPath: cwd, // actual CWD, not the .claude/projects dir
         isSidechain: false,
       });
     }
