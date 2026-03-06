@@ -1,5 +1,5 @@
 // Handle incoming Slack messages
-import { getOrCreateSession, getSession, setSessionVerbose, updateSessionId, getThreadCwd } from '../services/session';
+import { getOrCreateSession, getSession, setSessionVerbose, updateSessionId, getThreadCwd, ensureSessionsIndex } from '../services/session';
 import { executeClaudeStreaming, extractText, type StreamEvent, type ContentBlock } from '../services/claude';
 import { postMessage, addReaction, removeReaction, getToolEmoji, MessageUpdater, updateMessage } from '../services/slack';
 import { splitForSlack, markdownToSlack, stripSystemReminders } from '../lib/markdown-to-slack';
@@ -204,6 +204,14 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
     // Execute Claude and stream responses
     const isWindows = process.platform === 'win32';
     const threadCwd = getThreadCwd(channel, threadTs); // returns '' on non-Windows
+
+    // On Windows, ensure sessions-index.json exists in Claude's project dir BEFORE
+    // spawning with --continue. Claude reads the index at queue time (before hooks),
+    // so we must create it here in the bridge process.
+    if (!isNew && isWindows && threadCwd) {
+      ensureSessionsIndex(threadCwd);
+    }
+
     let claudeSessionId: string | undefined;
     for await (const event of executeClaudeStreaming(messageToSend, {
       resumeId: isNew ? undefined : (isWindows ? undefined : session.sessionId),

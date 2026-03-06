@@ -1,5 +1,5 @@
 // Session manager: maps Slack threads to Claude Code sessions
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
 import { randomUUID } from 'crypto';
@@ -221,4 +221,106 @@ export function getThreadCwd(channelId: string, threadTs: string): string {
     mkdirSync(threadDir, { recursive: true });
   }
   return threadDir;
+}
+
+/**
+ * Encode a CWD path to Claude Code's project directory name format.
+ * Claude replaces ':', '/', '\', and '.' with '-'.
+ * e.g. C:\Users\foo\.bar -> C--Users-foo--bar
+ */
+function cwdToProjectDirName(cwd: string): string {
+  return cwd.replace(/[:/\\.]/g, '-');
+}
+
+const UUID_JSONL = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/i;
+
+/**
+ * Ensure sessions-index.json exists and is up-to-date in Claude's project
+ * directory for the given CWD. Called before --continue so Claude can find
+ * the previous session. Sessions-index.json is not created by Claude when a
+ * new per-thread CWD is used (bug #23614), causing --continue to start fresh.
+ */
+export function ensureSessionsIndex(cwd: string): void {
+  try {
+    const paiDir = process.env.PAI_DIR || join(homedir(), '.claude');
+    const projectDirName = cwdToProjectDirName(cwd);
+    const projectDir = join(paiDir, 'projects', projectDirName);
+
+    if (!existsSync(projectDir)) return; // No project dir yet — first session hasn't run
+
+    const indexPath = join(projectDir, 'sessions-index.json');
+
+    // Read existing index or start fresh
+    let indexData: { entries: Record<string, unknown>[] } = { entries: [] };
+    if (existsSync(indexPath)) {
+      try {
+        indexData = JSON.parse(readFileSync(indexPath, 'utf-8'));
+      } catch {
+        indexData = { entries: [] };
+      }
+    }
+
+    const indexedIds = new Set(indexData.entries.map((e: Record<string, unknown>) => e.sessionId as string));
+
+    // Find .jsonl files not in the index
+    const jsonlFiles = readdirSync(projectDir)
+      .filter(f => UUID_JSONL.test(f))
+      .filter(f => !indexedIds.has(f.replace('.jsonl', '')));
+
+    if (jsonlFiles.length === 0) return; // Nothing to add
+
+    for (const file of jsonlFiles) {
+      const filePath = join(projectDir, file);
+      const sessionId = file.replace('.jsonl', '');
+      const stat = statSync(filePath);
+
+      // Parse minimal metadata from JSONL (first user prompt + timestamps)
+      let firstPrompt = 'No prompt';
+      let created: string | null = null;
+      let modified: string | null = null;
+      try {
+        const lines = readFileSync(filePath, 'utf-8').split('\n').filter(Boolean);
+        for (const line of lines) {
+          try {
+            const data = JSON.parse(line);
+            if (!created && data.timestamp) created = data.timestamp;
+            if (data.timestamp) modified = data.timestamp;
+            if (data.type === 'user' && firstPrompt === 'No prompt') {
+              const content = data.message?.content;
+              if (typeof content === 'string' && content.trim()) {
+                firstPrompt = content.slice(0, 80) + (content.length > 80 ? '...' : '');
+              }
+            }
+          } catch { /* skip bad lines */ }
+        }
+      } catch { /* skip unreadable files */ }
+
+      const now = new Date(stat.mtimeMs).toISOString();
+      indexData.entries.push({
+        sessionId,
+        fullPath: filePath,
+        fileMtime: stat.mtimeMs,
+        firstPrompt,
+        customTitle: null,
+        summary: firstPrompt,
+        messageCount: 0,
+        created: created || new Date(stat.ctimeMs).toISOString(),
+        modified: modified || now,
+        gitBranch: 'main',
+        projectPath: join(paiDir, 'projects'),
+        isSidechain: false,
+      });
+    }
+
+    // Sort newest first
+    indexData.entries.sort((a, b) =>
+      ((b.modified as string) || '').localeCompare((a.modified as string) || '')
+    );
+
+    writeFileSync(indexPath, JSON.stringify(indexData, null, 2), 'utf-8');
+    console.log(`[Session] Created/updated sessions-index.json in ${projectDirName} (${jsonlFiles.length} new session(s))`);
+  } catch (error) {
+    // Best-effort — don't crash the message handler
+    console.warn('[Session] ensureSessionsIndex failed:', error);
+  }
 }
