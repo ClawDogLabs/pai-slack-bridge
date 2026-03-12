@@ -1,6 +1,7 @@
 // Session manager: maps Slack threads to Claude Code sessions
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { dirname } from 'path';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, statSync } from 'fs';
+import { dirname, join } from 'path';
+import { homedir } from 'os';
 import { randomUUID } from 'crypto';
 
 export interface SessionMapping {
@@ -18,8 +19,8 @@ interface SessionStore {
 }
 
 // Use BRIDGE_DATA_DIR or default to ./data relative to project
-const DATA_DIR = process.env.BRIDGE_DATA_DIR || `${dirname(dirname(Bun.main))}/data`;
-const SESSIONS_PATH = `${DATA_DIR}/sessions.json`;
+const DATA_DIR = process.env.BRIDGE_DATA_DIR || join(dirname(dirname(Bun.main)), 'data');
+const SESSIONS_PATH = join(DATA_DIR, 'sessions.json');
 
 // Ensure data directory exists
 if (!existsSync(DATA_DIR)) {
@@ -203,4 +204,135 @@ export function cleanupOldSessions(maxAgeHours = 24): number {
   }
 
   return removed;
+}
+
+/**
+ * Get a per-thread CWD for Windows session isolation.
+ * On Windows, --resume doesn't work (Claude CLI bug #27463), so we use
+ * --continue which resumes the most recent session in the CWD. Each thread
+ * gets its own CWD to prevent cross-talk between concurrent threads.
+ * Returns empty string on non-Windows (use default CWD).
+ */
+export function getThreadCwd(channelId: string, threadTs: string): string {
+  if (process.platform !== 'win32') return '';
+  const baseCwd = process.env.BRIDGE_DEFAULT_CWD || join(homedir(), '.claude');
+  const threadDir = join(baseCwd, '.bridge-threads', `${channelId}-${threadTs}`);
+  if (!existsSync(threadDir)) {
+    mkdirSync(threadDir, { recursive: true });
+  }
+  return threadDir;
+}
+
+/**
+ * Encode a CWD path to Claude Code's project directory name format.
+ * Claude replaces ':', '/', '\', and '.' with '-'.
+ * e.g. C:\Users\foo\.bar -> C--Users-foo--bar
+ */
+function cwdToProjectDirName(cwd: string): string {
+  return cwd.replace(/[:/\\.]/g, '-');
+}
+
+const UUID_JSONL = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$/i;
+
+/**
+ * Ensure sessions-index.json exists and is up-to-date in Claude's project
+ * directory for the given CWD. Called before --continue so Claude can find
+ * the previous session. Sessions-index.json is not created by Claude when a
+ * new per-thread CWD is used (bug #23614), causing --continue to start fresh.
+ */
+export function ensureSessionsIndex(cwd: string): void {
+  try {
+    const paiDir = process.env.PAI_DIR || join(homedir(), '.claude');
+    const projectDirName = cwdToProjectDirName(cwd);
+    const projectDir = join(paiDir, 'projects', projectDirName);
+
+    if (!existsSync(projectDir)) {
+      console.log(`[Session] ensureSessionsIndex: Project dir doesn't exist yet: ${projectDir}`);
+      return; // No project dir yet — first session hasn't run
+    }
+
+    const indexPath = join(projectDir, 'sessions-index.json');
+    console.log(`[Session] ensureSessionsIndex: Checking ${indexPath}`);
+
+    // Read existing index or start fresh — must include "version": 1 to match Claude's format
+    let indexData: { version: number; entries: Record<string, unknown>[] } = { version: 1, entries: [] };
+    if (existsSync(indexPath)) {
+      try {
+        const parsed = JSON.parse(readFileSync(indexPath, 'utf-8'));
+        indexData = { version: 1, entries: parsed.entries || [] };
+        console.log(`[Session] ensureSessionsIndex: Found existing index with ${indexData.entries.length} entries`);
+      } catch {
+        indexData = { version: 1, entries: [] };
+        console.log(`[Session] ensureSessionsIndex: Existing index is invalid, starting fresh`);
+      }
+    } else {
+      console.log(`[Session] ensureSessionsIndex: No existing index found, will create new one`);
+    }
+
+    const indexedIds = new Set(indexData.entries.map((e: Record<string, unknown>) => e.sessionId as string));
+
+    // Find .jsonl files not in the index
+    const jsonlFiles = readdirSync(projectDir)
+      .filter(f => UUID_JSONL.test(f))
+      .filter(f => !indexedIds.has(f.replace('.jsonl', '')));
+
+    console.log(`[Session] ensureSessionsIndex: Found ${jsonlFiles.length} unindexed .jsonl files`);
+    if (jsonlFiles.length === 0) return; // Nothing to add
+
+    for (const file of jsonlFiles) {
+      const filePath = join(projectDir, file);
+      const sessionId = file.replace('.jsonl', '');
+      const stat = statSync(filePath);
+
+      // Parse minimal metadata from JSONL (first user prompt + timestamps)
+      let firstPrompt = 'No prompt';
+      let created: string | null = null;
+      let modified: string | null = null;
+      let messageCount = 0;
+      try {
+        const lines = readFileSync(filePath, 'utf-8').split('\n').filter(Boolean);
+        for (const line of lines) {
+          try {
+            const data = JSON.parse(line);
+            if (!created && data.timestamp) created = data.timestamp;
+            if (data.timestamp) modified = data.timestamp;
+            if (['user', 'assistant', 'tool_use', 'tool_result'].includes(data.type)) messageCount++;
+            if (data.type === 'user' && firstPrompt === 'No prompt') {
+              const content = data.message?.content;
+              if (typeof content === 'string' && content.trim()) {
+                firstPrompt = content.slice(0, 80) + (content.length > 80 ? '...' : '');
+              }
+            }
+          } catch { /* skip bad lines */ }
+        }
+      } catch { /* skip unreadable files */ }
+
+      const now = new Date(stat.mtimeMs).toISOString();
+      indexData.entries.push({
+        sessionId,
+        fullPath: filePath,
+        fileMtime: stat.mtimeMs,
+        firstPrompt,
+        customTitle: null,
+        summary: firstPrompt,
+        messageCount,
+        created: created || new Date(stat.ctimeMs).toISOString(),
+        modified: modified || now,
+        gitBranch: '',
+        projectPath: cwd, // actual CWD, not the .claude/projects dir
+        isSidechain: false,
+      });
+    }
+
+    // Sort newest first
+    indexData.entries.sort((a, b) =>
+      ((b.modified as string) || '').localeCompare((a.modified as string) || '')
+    );
+
+    writeFileSync(indexPath, JSON.stringify(indexData, null, 2), 'utf-8');
+    console.log(`[Session] Created/updated sessions-index.json in ${projectDirName} (${jsonlFiles.length} new session(s))`);
+  } catch (error) {
+    // Best-effort — don't crash the message handler
+    console.warn('[Session] ensureSessionsIndex failed:', error);
+  }
 }

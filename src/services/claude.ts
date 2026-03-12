@@ -1,6 +1,8 @@
 // Claude CLI spawner: executes claude in headless mode and streams output
 import { spawn, type Subprocess } from 'bun';
 import { readFileSync, existsSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 import type { DeskDefinition } from '../types/desk';
 
 export interface ClaudeOptions {
@@ -11,6 +13,7 @@ export interface ClaudeOptions {
   permissionMode?: string;
   desk?: DeskDefinition; // Desk context for routing
   verbose?: boolean;     // Pass --verbose to Claude CLI (default: true)
+  useContinue?: boolean; // Use --continue instead of --resume (Windows workaround)
 }
 
 export interface StreamEvent {
@@ -52,10 +55,10 @@ export async function* executeClaudeStreaming(
   message: string,
   options: ClaudeOptions
 ): AsyncGenerator<StreamEvent> {
-  const paiDir = process.env.PAI_DIR || `${process.env.HOME}/.claude`;
+  const paiDir = process.env.PAI_DIR || join(homedir(), '.claude');
   const cwd = options.cwd || process.env.BRIDGE_DEFAULT_CWD || paiDir;
 
-  const settingsPath = `${paiDir}/settings.json`;
+  const settingsPath = join(paiDir, 'settings.json');
 
   // Build desk context if provided
   let deskContext = '';
@@ -151,7 +154,9 @@ ${deskContext}`;
   ];
 
   // Session handling: resume existing or start new with specific ID
-  if (options.resumeId) {
+  if (options.useContinue) {
+    args.push('--continue');
+  } else if (options.resumeId) {
     args.push('--resume', options.resumeId);
   } else if (options.sessionId) {
     args.push('--session-id', options.sessionId);

@@ -67,6 +67,8 @@ export interface DeskDefinition {
   knowledge: DeskKnowledge;
   system_prompt_suffix?: string;
   persistence: DeskPersistence;
+  /** Working directory for Claude CLI (expands ~) */
+  cwd?: string;
 }
 
 /**
