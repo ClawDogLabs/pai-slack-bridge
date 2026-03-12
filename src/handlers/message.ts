@@ -203,7 +203,9 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
 
     // Execute Claude and stream responses
     const isWindows = process.platform === 'win32';
-    const threadCwd = getThreadCwd(channel, threadTs); // returns '' on non-Windows
+    // Desk cwd takes priority over thread-isolated cwd
+    const deskCwd = primaryDesk?.cwd || '';
+    const threadCwd = deskCwd || getThreadCwd(channel, threadTs); // returns '' on non-Windows
 
     // On Windows, ensure sessions-index.json exists in Claude's project dir BEFORE
     // spawning with --continue. Claude reads the index at queue time (before hooks),

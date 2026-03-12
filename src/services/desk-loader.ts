@@ -65,6 +65,7 @@ function loadDefaults(): DeskDefaults {
 function applyDefaults(desk: DeskDefinition, defaults: DeskDefaults): DeskDefinition {
   return {
     ...desk,
+    cwd: desk.cwd ? expandPath(desk.cwd) : undefined,
     composition: desk.composition || defaults.composition || { traits: ['helpful'] },
     boundaries: {
       writable: expandPaths(desk.boundaries?.writable) || [],
