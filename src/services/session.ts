@@ -246,9 +246,13 @@ export function ensureSessionsIndex(cwd: string): void {
     const projectDirName = cwdToProjectDirName(cwd);
     const projectDir = join(paiDir, 'projects', projectDirName);
 
-    if (!existsSync(projectDir)) return; // No project dir yet — first session hasn't run
+    if (!existsSync(projectDir)) {
+      console.log(`[Session] ensureSessionsIndex: Project dir doesn't exist yet: ${projectDir}`);
+      return; // No project dir yet — first session hasn't run
+    }
 
     const indexPath = join(projectDir, 'sessions-index.json');
+    console.log(`[Session] ensureSessionsIndex: Checking ${indexPath}`);
 
     // Read existing index or start fresh — must include "version": 1 to match Claude's format
     let indexData: { version: number; entries: Record<string, unknown>[] } = { version: 1, entries: [] };
@@ -256,9 +260,13 @@ export function ensureSessionsIndex(cwd: string): void {
       try {
         const parsed = JSON.parse(readFileSync(indexPath, 'utf-8'));
         indexData = { version: 1, entries: parsed.entries || [] };
+        console.log(`[Session] ensureSessionsIndex: Found existing index with ${indexData.entries.length} entries`);
       } catch {
         indexData = { version: 1, entries: [] };
+        console.log(`[Session] ensureSessionsIndex: Existing index is invalid, starting fresh`);
       }
+    } else {
+      console.log(`[Session] ensureSessionsIndex: No existing index found, will create new one`);
     }
 
     const indexedIds = new Set(indexData.entries.map((e: Record<string, unknown>) => e.sessionId as string));
@@ -268,6 +276,7 @@ export function ensureSessionsIndex(cwd: string): void {
       .filter(f => UUID_JSONL.test(f))
       .filter(f => !indexedIds.has(f.replace('.jsonl', '')));
 
+    console.log(`[Session] ensureSessionsIndex: Found ${jsonlFiles.length} unindexed .jsonl files`);
     if (jsonlFiles.length === 0) return; // Nothing to add
 
     for (const file of jsonlFiles) {

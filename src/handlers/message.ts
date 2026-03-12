@@ -207,13 +207,6 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
     const deskCwd = primaryDesk?.cwd || '';
     const threadCwd = deskCwd || getThreadCwd(channel, threadTs); // returns '' on non-Windows
 
-    // On Windows, ensure sessions-index.json exists in Claude's project dir BEFORE
-    // spawning with --continue. Claude reads the index at queue time (before hooks),
-    // so we must create it here in the bridge process.
-    if (!isNew && isWindows && threadCwd) {
-      ensureSessionsIndex(threadCwd);
-    }
-
     let claudeSessionId: string | undefined;
     for await (const event of executeClaudeStreaming(messageToSend, {
       resumeId: isNew ? undefined : (isWindows ? undefined : session.sessionId),
@@ -391,6 +384,13 @@ export async function handleMessage(message: SlackMessage): Promise<void> {
           console.log(`[Handler] Got final text from result event (${currentTurnText.length} chars)`);
         }
       }
+    }
+
+    // On Windows, update sessions-index.json AFTER Claude finishes
+    // (now the project dir exists and we can index the session)
+    if (isWindows && threadCwd && claudeSessionId) {
+      console.log(`[Handler] Updating sessions-index.json after Claude finished (sessionId=${claudeSessionId})`);
+      ensureSessionsIndex(threadCwd);
     }
 
     // Finalize: update processing message to done, post final response as new message
